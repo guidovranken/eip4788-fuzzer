@@ -1,7 +1,8 @@
 #include <cstdint>
-#include <intx/intx.hpp>
+#include <optional>
 #include <cassert>
 
+#include <intx/intx.hpp>
 #include "json.hpp"
 
 extern "C" {
@@ -9,6 +10,11 @@ extern "C" {
     #include "eip4788.h"
 }
 
+#ifdef NDEBUG
+# error "NDEBUG must not be set (asserts must be functional)"
+#endif
+
+using Buffer = std::vector<uint8_t>;
 using uint256 = intx::uint256;
 
 namespace constants {
@@ -23,12 +29,13 @@ namespace util {
         return intx::be::unsafe::load<uint256>(data);
     }
 
-    static uint256 load(const std::vector<uint8_t>& v) {
+    static uint256 load(const Buffer& v) {
         return load(v.data());
     }
 
+#define ADVANCE(s) *data += s; remaining -= s;
     template <class T>
-    std::optional<T> extract(const uint8_t** data, size_t& remaining) {
+    static std::optional<T> extract(const uint8_t** data, size_t& remaining) {
         T ret;
 
         if ( remaining < sizeof(ret) ) {
@@ -37,8 +44,7 @@ namespace util {
 
         memcpy(&ret, data, sizeof(ret));
 
-        *data += sizeof(ret);
-        remaining -= sizeof(ret);
+        ADVANCE(sizeof(ret));
 
         return ret;
     }
@@ -57,31 +63,30 @@ namespace util {
 
         const auto ret = load(*data);
 
-        *data += 32;
-        remaining -= 32;
+        ADVANCE(32);
 
         return ret;
     }
 
     template <>
-    std::optional<std::vector<uint8_t>> extract(const uint8_t** data, size_t& remaining) {
+    std::optional<Buffer> extract(const uint8_t** data, size_t& remaining) {
         const auto size = extract<uint16_t>(data, remaining);
         if ( size == std::nullopt ) return std::nullopt;
 
         if ( remaining < *size ) return std::nullopt;
 
-        std::vector<uint8_t> ret(*size);
+        Buffer ret(*size);
         memcpy(ret.data(), *data, *size);
 
-        *data += *size;
-        remaining -= *size;
+        ADVANCE(*size);
 
         return ret;
     }
+#undef ADVANCE
 
-    static std::vector<uint8_t> save(const uint256& value) {
+    static Buffer save(const uint256& v) {
         uint8_t bytes[32];
-        intx::be::unsafe::store(bytes, value);
+        intx::be::unsafe::store(bytes, v);
         return {bytes, bytes + 32};
     }
 }
@@ -94,9 +99,9 @@ class Storage {
             return {};
         }
 
-        void Set(const uint256& address, const uint256& value) {
+        void Set(const uint256& address, const uint256& v) {
             (void)address;
-            (void)value;
+            (void)v;
         }
 
         /* Use xxHash to hash the storage */
@@ -116,11 +121,12 @@ class Storage {
 class Input {
     public:
         uint256 caller;
-        std::vector<uint8_t> calldata;
+        Buffer calldata;
         Storage storage;
         uint64_t timestamp;
         uint64_t gas;
 
+        /* Deserialize variables from the fuzzer input */
         static std::optional<Input> Extract(const uint8_t** data, size_t& remaining) {
 #define EXTRACT(var, T) \
             const auto var = extract<T>(data, remaining); \
@@ -134,18 +140,19 @@ class Input {
             Input ret;
 
             EXTRACT2(caller, uint256);
-            EXTRACT2(calldata, std::vector<uint8_t>);
+            EXTRACT2(calldata, Buffer);
 
+            /* Set zero or more storage entries */
             while ( true ) {
-                EXTRACT(cont, bool);
-                if ( *cont == false ) {
+                EXTRACT(continue_, bool);
+                if ( *continue_ == false ) {
                     break;
                 }
 
                 EXTRACT(address, uint256);
-                EXTRACT(value, uint256);
+                EXTRACT(v, uint256);
 
-                ret.storage.Set(*address, *value);
+                ret.storage.Set(*address, *v);
             }
 
             EXTRACT2(timestamp, uint64_t);
@@ -176,7 +183,7 @@ class Eip4788 {
     public:
         struct ReturnValue {
             bool reverted;
-            std::vector<uint8_t> v;
+            Buffer v;
 
             static ReturnValue revert(void) {
                 return ReturnValue{
@@ -185,18 +192,19 @@ class Eip4788 {
                 };
             }
 
-            static ReturnValue value(const uint256& value) {
+            static ReturnValue value(const Buffer& v) {
                 return ReturnValue{
                     .reverted = false,
-                    .v = util::save(value),
+                    .v = v,
                 };
             }
 
-            static ReturnValue empty_value(void) {
-                return ReturnValue{
-                    .reverted = false,
-                    .v = {},
-                };
+            static ReturnValue value(const uint256& v) {
+                return value(util::save(v));
+            }
+
+            bool operator==(const ReturnValue& rhs) const {
+                return reverted == rhs.reverted && v == rhs.v;
             }
         };
 
@@ -233,17 +241,21 @@ class Eip4788 {
                 uint256(input.timestamp) %
                 constants::HISTORICAL_ROOTS_MODULUS;
             const auto root_idx = timestamp_idx + constants::HISTORICAL_ROOTS_MODULUS;
-            
+
             input.storage.Set(timestamp_idx, input.timestamp);
             (void)root_idx;
             //input.storage.Set(root_idx, input.calldata);
-            return ReturnValue::empty_value();
+            return ReturnValue::value(Buffer{});
         }
 };
 
 struct ExecutionResult {
     Eip4788::ReturnValue ret;
     uint64_t hash;
+
+    bool operator==(const ExecutionResult& rhs) const {
+        return ret == rhs.ret && hash == rhs.hash;
+    }
 };
 
 extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
