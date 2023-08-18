@@ -1,8 +1,10 @@
 #include <cstdint>
-#include <optional>
 #include <cassert>
+#include <cstdlib>
+#include <optional>
 #include <map>
 
+#include <boost/algorithm/hex.hpp>
 #include <intx/intx.hpp>
 #include "json.hpp"
 
@@ -20,9 +22,11 @@ using uint256 = intx::uint256;
 
 namespace constants {
     using namespace intx;
+
     constexpr uint256 HISTORICAL_ROOTS_MODULUS = 98304;
     constexpr uint256 SYSTEM_ADDRESS = 0xfffffffffffffffffffffffffffffffffffffffe_u256;
     constexpr uint64_t ShanghaiTimestamp = 1681338455ULL;
+    constexpr uint256 AddressMask = 0xffffffffffffffffffffffffffffffffffffffff_u256;
 }
 
 namespace util {
@@ -94,6 +98,18 @@ namespace util {
     static void hash(XXH64_state_t*h, const Buffer& data) {
         assert(XXH64_update(h, data.data(), data.size()) != XXH_ERROR);
     }
+
+    static Buffer unhex(const std::string& data) {
+        std::vector<uint8_t> ret;
+        boost::algorithm::unhex(data, std::back_inserter(ret));
+        return ret;
+    }
+
+    static std::string load(char* s) {
+        const std::string ret(s);
+        free(s);
+        return ret;
+    }
 }
 
 /* Mock EVM storage */
@@ -155,6 +171,9 @@ class Input {
             Input ret;
 
             EXTRACT2(caller, uint256);
+            /* An address has only 20 bytes, so remove the upper 12 */
+            ret.caller &= constants::AddressMask;
+
             EXTRACT2(calldata, Buffer);
 
             /* Set zero or more storage entries */
@@ -206,28 +225,28 @@ class Eip4788 {
     public:
         struct ReturnValue {
             bool reverted;
-            Buffer v;
+            Buffer data;
 
             static ReturnValue revert(void) {
                 return ReturnValue{
                     .reverted = true,
-                    .v = {},
+                    .data = {},
                 };
             }
 
-            static ReturnValue value(const Buffer& v) {
+            static ReturnValue value(const Buffer& data) {
                 return ReturnValue{
                     .reverted = false,
-                    .v = v,
+                    .data = data,
                 };
             }
 
-            static ReturnValue value(const uint256& v) {
-                return value(util::save(v));
+            static ReturnValue value(const uint256& data) {
+                return value(util::save(data));
             }
 
             bool operator==(const ReturnValue& rhs) const {
-                return reverted == rhs.reverted && v == rhs.v;
+                return reverted == rhs.reverted && data == rhs.data;
             }
         };
 
@@ -244,12 +263,14 @@ class Eip4788 {
                 return ReturnValue::revert();
             }
 
+            const auto calldata_u256 = util::load(input.calldata);
+
             const auto timestamp_idx =
-                util::load(input.calldata) %
+                calldata_u256 %
                 constants::HISTORICAL_ROOTS_MODULUS;
             const auto timestamp = input.storage.Get(timestamp_idx);
 
-            if ( timestamp != timestamp_idx ) {
+            if ( timestamp != calldata_u256 ) {
                 return ReturnValue::revert();
             }
 
@@ -279,6 +300,20 @@ struct ExecutionResult {
     bool operator==(const ExecutionResult& rhs) const {
         return ret == rhs.ret && hash == rhs.hash;
     }
+
+    static ExecutionResult FromJson(const nlohmann::json& j) {
+        return ExecutionResult{
+            .ret = Eip4788::ReturnValue{
+                .reverted = j["Ret"]["Reverted"].get<bool>(),
+                .data = util::unhex(j["Ret"]["Data"].get<std::string>()),
+            },
+            .hash = j["Hash"].get<uint64_t>()
+        };
+    }
+
+    static ExecutionResult FromJson(const std::string& s) {
+        return FromJson(nlohmann::json::parse(s));
+    }
 };
 
 extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
@@ -291,8 +326,10 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
     {
         auto inp = *input;
         const auto ret = Eip4788::run(inp);
-        const auto hash = inp.storage.Hash();
-        cpp = {.ret = ret, .hash = hash};
+        /* TODO enable this when Geth storage hashing is working */
+        //const auto hash = inp.storage.Hash();
+        //cpp = {.ret = ret, .hash = hash};
+        cpp = {.ret = ret, .hash = 0};
     }
 
     /* Run the canonical bytecode implementation */
@@ -302,12 +339,12 @@ extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
             .data = jsonStr.data(),
             .len = static_cast<GoInt>(jsonStr.size()),
             .cap = static_cast<GoInt>(jsonStr.size())};
-        Native_Eip4788(inp);
-        /* TODO get result */
+        Native_Eip4788_Run(inp);
+        const auto res = util::load(Native_Eip4788_Result());
+        native = ExecutionResult::FromJson(res);
     }
 
-    /* TODO compare return value and storage hash */
-    //assert(cpp == native);
+    assert(cpp == native);
 
     return 0;
 }

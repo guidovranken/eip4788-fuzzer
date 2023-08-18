@@ -1,6 +1,7 @@
 package main
 
 import (
+    "github.com/ethereum/go-ethereum/core/vm"
     "github.com/ethereum/go-ethereum/core/vm/runtime"
     st "github.com/ethereum/go-ethereum/core/state"
     "github.com/ethereum/go-ethereum/core/rawdb"
@@ -8,6 +9,7 @@ import (
     "github.com/ethereum/go-ethereum/params"
     "math/big"
     "encoding/json"
+    "encoding/hex"
 )
 
 import "C"
@@ -20,8 +22,18 @@ type Input struct {
     Gas uint64
 }
 
+type ReturnValue struct {
+    Reverted bool
+    Data string
+}
+
+type ExecutionResult struct {
+    Ret ReturnValue
+    Hash uint64
+}
+
 var eip4788_contract_code = []byte{
-    0x60, 0x58, 0x80, 0x60, 0x09, 0x5f, 0x39, 0x5f, 0xf3, 0x33, 0x73, 0xff,
+    /*0x60, 0x58, 0x80, 0x60, 0x09, 0x5f, 0x39, 0x5f, 0xf3, */0x33, 0x73, 0xff,
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xfe, 0x14, 0x60, 0x44, 0x57, 0x60,
     0x20, 0x36, 0x14, 0x60, 0x24, 0x57, 0x5f, 0x5f, 0xfd, 0x5b, 0x62, 0x01,
@@ -42,8 +54,18 @@ func init() {
     snapshot = state.Snapshot()
 }
 
-//export Native_Eip4788
-func Native_Eip4788(data []byte) int {
+var result []byte
+
+//export Native_Eip4788_Result
+func Native_Eip4788_Result() *C.char {
+    return C.CString(string(result))
+}
+
+//export Native_Eip4788_Run
+func Native_Eip4788_Run(data []byte) {
+    /* Reset result */
+    result = []byte{}
+
     var input Input
     err := json.Unmarshal(data, &input)
     if err != nil {
@@ -62,23 +84,31 @@ func Native_Eip4788(data []byte) int {
             common.HexToHash(value))
     }
 
-    _, _, err = runtime.Execute(
-        eip4788_contract_code,
+    returndata, _, err := runtime.Call(
+        BEACON_ROOTS_ADDRESS,
         input.CallData,
         &runtime.Config{
             Origin: caller,
             State: state,
             ChainConfig: params.MainnetChainConfig,
-            GasLimit: input.Gas,
+            //GasLimit: input.Gas,
+            GasLimit: 0,
             BlockNumber: new(big.Int).SetUint64(12965000),
             Time: input.Timestamp,
         },
     )
 
-    if err == nil {
-        return 0
-    } else {
-        return 1
+    if returndata == nil {
+        returndata = []byte{}
+    }
+
+    var res ExecutionResult
+    res.Ret.Reverted = err == vm.ErrExecutionReverted
+    res.Ret.Data = hex.EncodeToString(returndata)
+
+    result, err = json.Marshal(&res)
+    if err != nil {
+        panic("Cannot save JSON")
     }
 }
 
