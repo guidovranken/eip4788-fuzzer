@@ -1,6 +1,7 @@
 #include <cstdint>
 #include <optional>
 #include <cassert>
+#include <map>
 
 #include <intx/intx.hpp>
 #include "json.hpp"
@@ -42,7 +43,7 @@ namespace util {
             return std::nullopt;
         }
 
-        memcpy(&ret, data, sizeof(ret));
+        memcpy(&ret, *data, sizeof(ret));
 
         ADVANCE(sizeof(ret));
 
@@ -89,19 +90,27 @@ namespace util {
         intx::be::unsafe::store(bytes, v);
         return {bytes, bytes + 32};
     }
+
+    static void hash(XXH64_state_t*h, const Buffer& data) {
+        assert(XXH64_update(h, data.data(), data.size()) != XXH_ERROR);
+    }
 }
 
 /* Mock EVM storage */
 class Storage {
+    private:
+        std::map<uint256, uint256> storage;
     public:
         uint256 Get(const uint256& address) const {
-            (void)address;
-            return {};
+            if ( storage.count(address) ) {
+                return storage.at(address);
+            } else {
+                return 0;
+            }
         }
 
         void Set(const uint256& address, const uint256& v) {
-            (void)address;
-            (void)v;
+            storage[address] = v;
         }
 
         /* Use xxHash to hash the storage */
@@ -109,12 +118,18 @@ class Storage {
             auto h = XXH64_createState();
             assert(XXH64_reset(h, 0) != XXH_ERROR);
 
-            /* TODO iterate over storage */
-            //assert(XXH64_update(h, data, size) != XXH_ERROR);
+            for (const auto& kv: storage) {
+                util::hash(h, util::save(kv.first));
+                util::hash(h, util::save(kv.second));
+            }
 
             const auto hash = XXH64_digest(h);
             XXH64_freeState(h);
             return hash;
+        }
+
+        const std::map<uint256, uint256>& MapRef(void) const {
+            return storage;
         }
 };
 
@@ -170,11 +185,19 @@ class Input {
 
         nlohmann::json Json(void) const {
             nlohmann::json ret;
+
             ret["caller"] = util::save(caller);
             ret["calldata"] = calldata;
-            /* TODO storage */
+
+            nlohmann::json storage_;
+            for (const auto& kv : storage.MapRef()) {
+                storage_[intx::hex(kv.first)] = intx::hex(kv.second);
+            }
+            ret["storage"] = storage_;
+
             ret["timestamp"] = timestamp;
             ret["gas"] = gas;
+
             return ret;
         }
 };
