@@ -10,6 +10,7 @@ import (
     "math/big"
     "encoding/json"
     "encoding/hex"
+    //"fmt"
 )
 
 import "C"
@@ -49,9 +50,6 @@ var state* st.StateDB
 var snapshot int
 
 func init() {
-    state, _ = st.New(common.Hash{}, st.NewDatabase(rawdb.NewMemoryDatabase()), nil)
-    state.SetCode(BEACON_ROOTS_ADDRESS, eip4788_contract_code)
-    snapshot = state.Snapshot()
 }
 
 var result []byte
@@ -59,6 +57,16 @@ var result []byte
 //export Native_Eip4788_Result
 func Native_Eip4788_Result() *C.char {
     return C.CString(string(result))
+}
+
+//export Native_Eip4788_Reset
+func Native_Eip4788_Reset() {
+    state, _ = st.New(common.Hash{}, st.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+    state.SetCode(BEACON_ROOTS_ADDRESS, eip4788_contract_code)
+    snapshot = state.Snapshot()
+    //state.RevertToSnapshot(snapshot)
+    //snapshot = state.Snapshot()
+    //fmt.Println("snapshot", snapshot)
 }
 
 //export Native_Eip4788_Run
@@ -71,9 +79,6 @@ func Native_Eip4788_Run(data []byte) {
     if err != nil {
         panic("Cannot load JSON")
     }
-
-    state.RevertToSnapshot(snapshot)
-    snapshot = state.Snapshot()
 
     caller := common.BytesToAddress(input.Caller)
 

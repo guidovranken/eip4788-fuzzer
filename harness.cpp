@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <optional>
 #include <map>
+#include <iostream>
 
 #include <boost/algorithm/hex.hpp>
 #include <intx/intx.hpp>
@@ -26,16 +27,24 @@ namespace constants {
     constexpr uint256 HISTORICAL_ROOTS_MODULUS = 98304;
     constexpr uint256 SYSTEM_ADDRESS = 0xfffffffffffffffffffffffffffffffffffffffe_u256;
     constexpr uint64_t ShanghaiTimestamp = 1681338455ULL;
+    constexpr uint64_t FORK_TIMESTAMP = ShanghaiTimestamp;
+    /* Shanghai is needed for the PUSH0 opcode */
+    static_assert(FORK_TIMESTAMP >= ShanghaiTimestamp);
     constexpr uint256 AddressMask = 0xffffffffffffffffffffffffffffffffffffffff_u256;
 }
 
 namespace util {
-    static uint256 load(const uint8_t* data) {
+    static Buffer trim32(Buffer v) {
+        v.resize(32, 0);
+        return v;
+    }
+
+    constexpr uint256 load(const uint8_t* data) {
         return intx::be::unsafe::load<uint256>(data);
     }
 
     static uint256 load(const Buffer& v) {
-        return load(v.data());
+        return load(trim32(v).data());
     }
 
 #define ADVANCE(s) *data += s; remaining -= s;
@@ -47,7 +56,10 @@ namespace util {
             return std::nullopt;
         }
 
-        memcpy(&ret, *data, sizeof(ret));
+        std::array<uint8_t, sizeof(T)> bytes;
+        memcpy(bytes.data(), *data, bytes.size());
+        std::reverse(bytes.begin(), bytes.end());
+        memcpy(&ret, bytes.data(), sizeof(T));
 
         ADVANCE(sizeof(ret));
 
@@ -105,11 +117,20 @@ namespace util {
         return ret;
     }
 
+#if !defined(FUZZER_INVARIANTS)
+    constexpr GoSlice ToGoSlice(void* data, const size_t size) {
+        return GoSlice{
+            .data = data,
+            .len = static_cast<GoInt>(size),
+            .cap = static_cast<GoInt>(size)};
+    }
+
     static std::string load(char* s) {
         const std::string ret(s);
         free(s);
         return ret;
     }
+#endif
 }
 
 /* Mock EVM storage */
@@ -153,12 +174,15 @@ class Input {
     public:
         uint256 caller;
         Buffer calldata;
-        Storage storage;
         uint64_t timestamp;
         uint64_t gas;
 
         /* Deserialize variables from the fuzzer input */
-        static std::optional<Input> Extract(const uint8_t** data, size_t& remaining) {
+        static std::optional<Input> Extract(
+                const uint8_t** data,
+                size_t& remaining,
+                Storage& storage,
+                const bool fill_storage = true) {
 #define EXTRACT(var, T) \
             const auto var = extract<T>(data, remaining); \
             if ( var == std::nullopt ) return std::nullopt;
@@ -176,23 +200,24 @@ class Input {
 
             EXTRACT2(calldata, Buffer);
 
-            /* Set zero or more storage entries */
-            while ( true ) {
-                EXTRACT(continue_, bool);
-                if ( *continue_ == false ) {
-                    break;
+            if ( fill_storage == true ) {
+                /* Set zero or more storage entries */
+                while ( true ) {
+                    EXTRACT(continue_, bool);
+                    if ( *continue_ == false ) {
+                        break;
+                    }
+
+                    EXTRACT(address, uint256);
+                    EXTRACT(v, uint256);
+
+                    storage.Set(*address, *v);
                 }
-
-                EXTRACT(address, uint256);
-                EXTRACT(v, uint256);
-
-                ret.storage.Set(*address, *v);
             }
 
             EXTRACT2(timestamp, uint64_t);
-            if ( ret.timestamp < constants::ShanghaiTimestamp ) {
-                /* Shanghai is needed for the PUSH0 opcode */
-                ret.timestamp = constants::ShanghaiTimestamp;
+            if ( ret.timestamp < constants::FORK_TIMESTAMP ) {
+                ret.timestamp = constants::FORK_TIMESTAMP;
             }
 
             EXTRACT2(gas, uint64_t);
@@ -202,7 +227,7 @@ class Input {
 #undef EXTRACT2
         }
 
-        nlohmann::json Json(void) const {
+        nlohmann::json Json(Storage& storage) const {
             nlohmann::json ret;
 
             ret["caller"] = util::save(caller);
@@ -250,15 +275,15 @@ class Eip4788 {
             }
         };
 
-        static ReturnValue run(Input& input) {
+        static ReturnValue run(const Input& input, Storage& storage) {
             if ( input.caller == constants::SYSTEM_ADDRESS ) {
-                return set(input);
+                return set(input, storage);
             } else {
-                return get(input);
+                return get(input, storage);
             }
         }
 
-        static ReturnValue get(const Input& input) {
+        static ReturnValue get(const Input& input, const Storage& storage) {
             if ( input.calldata.size() != 32 ) {
                 return ReturnValue::revert();
             }
@@ -268,27 +293,31 @@ class Eip4788 {
             const auto timestamp_idx =
                 calldata_u256 %
                 constants::HISTORICAL_ROOTS_MODULUS;
-            const auto timestamp = input.storage.Get(timestamp_idx);
+            const auto timestamp = storage.Get(timestamp_idx);
 
             if ( timestamp != calldata_u256 ) {
                 return ReturnValue::revert();
             }
 
             const auto root_idx = timestamp_idx + constants::HISTORICAL_ROOTS_MODULUS;
-            const auto root = input.storage.Get(root_idx);
+
+            assert(timestamp_idx != root_idx);
+
+            const auto root = storage.Get(root_idx);
 
             return ReturnValue::value(root);
         }
 
-        static ReturnValue set(Input& input) {
+        static ReturnValue set(const Input& input, Storage& storage) {
             const auto timestamp_idx =
                 uint256(input.timestamp) %
                 constants::HISTORICAL_ROOTS_MODULUS;
             const auto root_idx = timestamp_idx + constants::HISTORICAL_ROOTS_MODULUS;
 
-            input.storage.Set(timestamp_idx, input.timestamp);
-            (void)root_idx;
-            //input.storage.Set(root_idx, input.calldata);
+            assert(timestamp_idx != root_idx);
+
+            storage.Set(timestamp_idx, input.timestamp);
+            storage.Set(root_idx, util::load(input.calldata));
             return ReturnValue::value(Buffer{});
         }
 };
@@ -316,35 +345,249 @@ struct ExecutionResult {
     }
 };
 
-extern "C" int LLVMFuzzerTestOneInput(const unsigned char* data, size_t size) {
-    const auto input = Input::Extract(&data, size);
-    if ( input == std::nullopt ) return 0;
+#if defined(FUZZER_DIFFERENTIAL)
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    Native_Eip4788_Reset();
+    const uint8_t** data_ = &data;
+    Storage storage;
+
+    while ( true ) {
+        const auto input = Input::Extract(data_, size, storage);
+        if ( input == std::nullopt ) return 0;
+
+        ExecutionResult cpp, native;
+
+        /* Run the C++ implementation */
+        {
+            auto inp = *input;
+            const auto ret = Eip4788::run(inp, storage);
+            /* TODO enable this when Geth storage hashing is working */
+            //const auto hash = inp.storage.Hash();
+            //cpp = {.ret = ret, .hash = hash};
+            cpp = {.ret = ret, .hash = 0};
+        }
+
+        /* Run the canonical bytecode implementation */
+        {
+            auto jsonStr = input->Json(storage).dump();
+            const auto inp = util::ToGoSlice(
+                    jsonStr.data(),
+                    jsonStr.size());
+            Native_Eip4788_Run(inp);
+            const auto res = util::load(Native_Eip4788_Result());
+            native = ExecutionResult::FromJson(res);
+        }
+
+        assert(cpp == native);
+    }
+
+    return 0;
+}
+#elif defined(FUZZER_INVARIANTS)
+class InvariantFuzzer {
+    private:
+        struct SetInvariants {
+            /* set() must never revert */
+            static void never_revert(
+                    const Eip4788::ReturnValue& ret) {
+                assert(ret.reverted == false);
+            }
+
+            /* set() must always return empty array */
+            static void always_return_empty(
+                    const Eip4788::ReturnValue& ret) {
+                assert(ret.data.empty());
+            }
+        };
+
+        static void set_invariants(
+                const Eip4788::ReturnValue& ret) {
+            SetInvariants::never_revert(ret);
+            SetInvariants::always_return_empty(ret);
+        }
+
+        struct GetInvariants {
+            /* get() must always revert if input is not 32 bytes */
+            static void revert_if_not_32(
+                    const Input& input,
+                    const Eip4788::ReturnValue& ret) {
+                if ( input.calldata.size() != 32 ) {
+                    assert(ret.reverted == true);
+                }
+            }
+
+            /* get() must always return 32 bytes if it didn't revert */
+            static void return_32_if_not_revert(
+                    const Eip4788::ReturnValue& ret) {
+                if ( ret.reverted == false ) {
+                    assert(ret.data.size() == 32);
+                }
+            }
+
+            static void symmetry(
+                    const Input& input,
+                    const std::optional<Input>& prev_input,
+                    const Eip4788::ReturnValue& ret) {
+                /* If there was a function call before the current one */
+                if ( !prev_input ) {
+                    return;
+                }
+
+                /* and the current call to get() was well-formed */
+                if ( input.calldata.size() != 32 ) {
+                    return;
+                }
+
+                /* and the previous call was to set() */
+                if ( prev_input->caller != constants::SYSTEM_ADDRESS ) {
+                    return;
+                }
+
+                /* and the timestamp during set() equals the current calldata */
+                if ( uint256(prev_input->timestamp) != util::load(input.calldata) ) {
+                    return;
+                }
+
+                /* then get() shouldn't revert */
+                assert(ret.reverted == false);
+
+                /* and get() should return set()'s (trimmed, zero-padded) calldata */
+                assert(ret.data == util::trim32(prev_input->calldata));
+
+                /* Invariant in pseudocode:
+                 *
+                 * For any 64-bit TS:
+                 *
+                 * set(timestamp = TS);
+                 * assert(get(calldata = TS) == TS);
+                 */
+            }
+
+            static void integrity(
+                    const Input& input,
+                    const Eip4788::ReturnValue& ret,
+                    const std::map<uint256, uint256>& timestamp_calldata_map) {
+                if ( ret.reverted == true ) {
+                    return;
+                }
+
+                const auto get_param = util::load(input.calldata);
+
+                if ( timestamp_calldata_map.count(get_param) == 0 ) {
+                    return;
+                }
+
+                const auto get_res = util::load(ret.data);
+                assert(timestamp_calldata_map.at(get_param) == get_res);
+            }
+        };
+
+        static void get_invariants(
+                const Input& input,
+                const std::optional<Input>& prev_input,
+                const Eip4788::ReturnValue& ret,
+                const std::map<uint256, uint256>& timestamp_calldata_map) {
+            GetInvariants::revert_if_not_32(input, ret);
+            GetInvariants::return_32_if_not_revert(ret);
+            GetInvariants::symmetry(input, prev_input, ret);
+            GetInvariants::integrity(input, ret, timestamp_calldata_map);
+        }
+
+    public:
+        static void Run(const uint8_t* data, size_t size) {
+            Storage storage;
+            const uint8_t** data_ = &data;
+            std::optional<Input> prev_input;
+            std::map<uint256, uint256> timestamp_calldata_map;
+
+            while ( true ) {
+                const auto input = Input::Extract(data_, size, storage, false);
+                if ( input == std::nullopt ) return;
+
+                const auto inp = *input;
+                const auto prev_storage_size = storage.MapRef().size();
+                const auto ret = Eip4788::run(inp, storage);
+                const auto cur_storage_size = storage.MapRef().size();
+
+                if ( input->caller == constants::SYSTEM_ADDRESS ) {
+                    timestamp_calldata_map[input->timestamp] =
+                        util::load(util::trim32(input->calldata));
+
+                    /* Each call to set() should add either 0 or 2 entries
+                     * to the storage
+                     */
+                    assert(
+                            cur_storage_size == prev_storage_size ||
+                            cur_storage_size == prev_storage_size + 2);
+
+                    set_invariants(ret);
+                } else {
+                    /* Each call to get() should leave the storage unchanged */
+                    assert(cur_storage_size == prev_storage_size);
+
+                    get_invariants(
+                            inp,
+                            prev_input,
+                            ret,
+                            timestamp_calldata_map);
+                }
+
+                prev_input = input;
+            }
+        }
+};
+
+extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    InvariantFuzzer::Run(data, size);
+    return 0;
+}
+#else
+int main(void)
+{
+    Native_Eip4788_Reset();
+    Storage storage;
 
     ExecutionResult cpp, native;
 
-    /* Run the C++ implementation */
     {
-        auto inp = *input;
-        const auto ret = Eip4788::run(inp);
-        /* TODO enable this when Geth storage hashing is working */
-        //const auto hash = inp.storage.Hash();
-        //cpp = {.ret = ret, .hash = hash};
-        cpp = {.ret = ret, .hash = 0};
+        Input input;
+        input.caller = constants::SYSTEM_ADDRESS;
+        input.calldata = {};
+        input.timestamp = constants::ShanghaiTimestamp;
+        input.gas = 0;
+
+        Eip4788::run(input, storage);
+
+        auto jsonStr = input.Json(storage).dump();
+        const auto inp = util::ToGoSlice(
+                jsonStr.data(),
+                jsonStr.size());
+        Native_Eip4788_Run(inp);
     }
 
-    /* Run the canonical bytecode implementation */
     {
-        auto jsonStr = input->Json().dump();
-        const GoSlice inp = {
-            .data = jsonStr.data(),
-            .len = static_cast<GoInt>(jsonStr.size()),
-            .cap = static_cast<GoInt>(jsonStr.size())};
+        Input input;
+        input.caller = 1234;
+        input.calldata = {
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x64, 0x37, 0x30, 0x57};
+        input.timestamp = constants::ShanghaiTimestamp;
+        input.gas = 0;
+
+        const auto ret = Eip4788::run(input, storage);
+        cpp = {.ret = ret, .hash = 0};
+
+        auto jsonStr = input.Json(storage).dump();
+        const auto inp = util::ToGoSlice(
+                jsonStr.data(),
+                jsonStr.size());
         Native_Eip4788_Run(inp);
         const auto res = util::load(Native_Eip4788_Result());
         native = ExecutionResult::FromJson(res);
     }
 
     assert(cpp == native);
-
-    return 0;
 }
+#endif
