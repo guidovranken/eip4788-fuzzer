@@ -7,10 +7,12 @@ import (
     "github.com/ethereum/go-ethereum/core/rawdb"
     "github.com/ethereum/go-ethereum/common"
     "github.com/ethereum/go-ethereum/params"
+    "github.com/cespare/xxhash/v2"
     "math/big"
     "encoding/json"
     "encoding/hex"
-    //"fmt"
+    "sort"
+    "golang.org/x/exp/slices"
 )
 
 import "C"
@@ -47,9 +49,90 @@ var eip4788_contract_code = []byte{
 var BEACON_ROOTS_ADDRESS = common.HexToAddress("0x89e64Be8700cC37EB34f9209c96466DEEDc0d8a6")
 
 var state* st.StateDB
-var snapshot int
 
 func init() {
+    // Vim regex to convert assembly listing in eip-4788.md
+    // to opcode whitelist:
+    //
+    // s#^\s*\(\w\+\)\(.*\)$#/* \1\2 */ vm.\U\1,#g
+    whitelist := []vm.OpCode{
+        /* push1 0x58 */ vm.PUSH1,
+        /* dup1 */ vm.DUP1,
+        /* push1 0x09 */ vm.PUSH1,
+        /* push0 */ vm.PUSH0,
+        /* codecopy */ vm.CODECOPY,
+        /* push0 */ vm.PUSH0,
+        /* return */ vm.RETURN,
+
+        /* caller */ vm.CALLER,
+        /* push20 0xfffffffffffffffffffffffffffffffffffffffe */ vm.PUSH20,
+        /* eq */ vm.EQ,
+        /* push1 0x44 */ vm.PUSH1,
+        /* jumpi */ vm.JUMPI,
+
+        /* push1 0x20 */ vm.PUSH1,
+        /* calldatasize */ vm.CALLDATASIZE,
+        /* eq */ vm.EQ,
+        /* push1 0x24 */ vm.PUSH1,
+        /* jumpi */ vm.JUMPI,
+
+        /* push0 */ vm.PUSH0,
+        /* push0 */ vm.PUSH0,
+        /* revert */ vm.REVERT,
+
+        /* jumpdest */ vm.JUMPDEST,
+        /* push3 0x018000 */ vm.PUSH3,
+        /* push0 */ vm.PUSH0,
+        /* calldataload */ vm.CALLDATALOAD,
+        /* mod */ vm.MOD,
+        /* dup1 */ vm.DUP1,
+        /* sload */ vm.SLOAD,
+        /* push0 */ vm.PUSH0,
+        /* calldataload */ vm.CALLDATALOAD,
+        /* eq */ vm.EQ,
+        /* push1 0x37 */ vm.PUSH1,
+        /* jumpi */ vm.JUMPI,
+
+        /* push0 */ vm.PUSH0,
+        /* push0 */ vm.PUSH0,
+        /* revert */ vm.REVERT,
+
+        /* jumpdest */ vm.JUMPDEST,
+        /* push3 0x018000 */ vm.PUSH3,
+        /* add */ vm.ADD,
+        /* sload */ vm.SLOAD,
+        /* push0 */ vm.PUSH0,
+        /* mstore */ vm.MSTORE,
+        /* push1 0x20 */ vm.PUSH1,
+        /* push0 */ vm.PUSH0,
+        /* return */ vm.RETURN,
+
+        /* jumpdest */ vm.JUMPDEST,
+        /* push3 0x018000 */ vm.PUSH3,
+        /* timestamp */ vm.TIMESTAMP,
+        /* mod */ vm.MOD,
+        /* timestamp */ vm.TIMESTAMP,
+        /* dup2 */ vm.DUP2,
+        /* sstore */ vm.SSTORE,
+        /* push0 */ vm.PUSH0,
+        /* calldataload */ vm.CALLDATALOAD,
+        /* swap1 */ vm.SWAP1,
+        /* push3 0x018000 */ vm.PUSH3,
+        /* add */ vm.ADD,
+        /* sstore */ vm.SSTORE,
+        /* stop */ vm.STOP,
+    }
+
+    found := map[vm.OpCode]bool{}
+    whitelist_uniq := []vm.OpCode{}
+    for _, v := range whitelist {
+        if !found[v] {
+            found[v] = true
+            whitelist_uniq = append(whitelist_uniq, v)
+        }
+    }
+
+    opcode_whitelist = whitelist_uniq
 }
 
 var result []byte
@@ -63,11 +146,54 @@ func Native_Eip4788_Result() *C.char {
 func Native_Eip4788_Reset() {
     state, _ = st.New(common.Hash{}, st.NewDatabase(rawdb.NewMemoryDatabase()), nil)
     state.SetCode(BEACON_ROOTS_ADDRESS, eip4788_contract_code)
-    snapshot = state.Snapshot()
-    //state.RevertToSnapshot(snapshot)
-    //snapshot = state.Snapshot()
-    //fmt.Println("snapshot", snapshot)
 }
+
+var opcode_whitelist []vm.OpCode
+
+type Tracer struct {}
+
+func (l *Tracer) CaptureStart(
+    env *vm.EVM,
+    from common.Address,
+    to common.Address,
+    create bool,
+    input []byte,
+    gas uint64,
+    value *big.Int) {}
+func (l *Tracer) CaptureState(pc uint64,
+    op vm.OpCode,
+    gas,
+    cost uint64,
+    scope *vm.ScopeContext,
+    rData []byte,
+    depth int,
+    err error) {
+    if slices.Contains(opcode_whitelist, op) == false {
+        panic("Executed opcode that is not in EIP-4788")
+    }
+}
+func (l *Tracer) CaptureFault(pc uint64,
+    op vm.OpCode,
+    gas,
+    cost uint64,
+    scope *vm.ScopeContext,
+    depth int,
+    err error) {}
+func (l *Tracer) CaptureEnd(output []byte,
+    gasUsed uint64,
+    err error) {}
+func (l *Tracer) CaptureEnter(
+    typ vm.OpCode,
+    from common.Address,
+    to common.Address,
+    input []byte,
+    gas uint64,
+    value *big.Int) {}
+func (l *Tracer) CaptureExit(output []byte,
+    gasUsed uint64,
+    err error) {}
+func (l *Tracer) CaptureTxStart(gasLimit uint64) {}
+func (l *Tracer) CaptureTxEnd(restGas uint64) {}
 
 //export Native_Eip4788_Run
 func Native_Eip4788_Run(data []byte) {
@@ -100,6 +226,9 @@ func Native_Eip4788_Run(data []byte) {
             GasLimit: 0,
             BlockNumber: new(big.Int).SetUint64(12965000),
             Time: input.Timestamp,
+            EVMConfig: vm.Config{
+                Tracer: &Tracer{},
+            },
         },
     )
 
@@ -107,9 +236,29 @@ func Native_Eip4788_Run(data []byte) {
         returndata = []byte{}
     }
 
+    /* Storage must be hashed in order (sorted by key) */
+    var storageKeys []common.Hash
+    /* Extract the storage keys */
+    for key := range state.GetStateObjects()[BEACON_ROOTS_ADDRESS].GetDirtyStorage() {
+        storageKeys = append(storageKeys, key)
+    }
+    /* Sort the storage keys */
+    sort.Slice(storageKeys, func(i, j int) bool {
+        return common.Hash.Cmp(storageKeys[i], storageKeys[j]) < 0
+    })
+
+    h := xxhash.New()
+    /* Hash the storage keys and values */
+    for _, k := range storageKeys {
+        v := state.GetState(BEACON_ROOTS_ADDRESS, k)
+        h.Write(k.Bytes())
+        h.Write(v.Bytes())
+    }
+
     var res ExecutionResult
     res.Ret.Reverted = err == vm.ErrExecutionReverted
     res.Ret.Data = hex.EncodeToString(returndata)
+    res.Hash = h.Sum64()
 
     result, err = json.Marshal(&res)
     if err != nil {

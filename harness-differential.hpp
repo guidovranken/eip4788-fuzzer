@@ -15,10 +15,8 @@ namespace harness {
                 {
                     auto inp = *input;
                     const auto ret = Eip4788::run(inp, storage);
-                    /* TODO enable this when Geth storage hashing is working */
-                    //const auto hash = inp.storage.Hash();
-                    //cpp = {.ret = ret, .hash = hash};
-                    cpp = {.ret = ret, .hash = 0};
+                    const auto hash = storage.Hash();
+                    cpp = {.ret = ret, .hash = hash};
                 }
 
                 /* Run the canonical bytecode implementation */
