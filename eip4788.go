@@ -136,6 +136,7 @@ func init() {
 }
 
 var result []byte
+var callers []common.Address
 
 //export Native_Eip4788_Result
 func Native_Eip4788_Result() *C.char {
@@ -146,6 +147,7 @@ func Native_Eip4788_Result() *C.char {
 func Native_Eip4788_Reset() {
     state, _ = st.New(common.Hash{}, st.NewDatabase(rawdb.NewMemoryDatabase()), nil)
     state.SetCode(BEACON_ROOTS_ADDRESS, eip4788_contract_code)
+    callers = []common.Address{}
 }
 
 var opcode_whitelist []vm.OpCode
@@ -168,6 +170,10 @@ func (l *Tracer) CaptureState(pc uint64,
     rData []byte,
     depth int,
     err error) {
+    if depth != 1 {
+        panic("Call depth should always be 1")
+    }
+
     if slices.Contains(opcode_whitelist, op) == false {
         panic("Executed opcode that is not in EIP-4788")
     }
@@ -195,6 +201,77 @@ func (l *Tracer) CaptureExit(output []byte,
 func (l *Tracer) CaptureTxStart(gasLimit uint64) {}
 func (l *Tracer) CaptureTxEnd(restGas uint64) {}
 
+func sortStorageKeys(state *st.StateDB) []common.Hash {
+    var storageKeys []common.Hash
+
+    /* Retrieve the storage keys */
+    for key := range state.GetStateObjects()[BEACON_ROOTS_ADDRESS].GetDirtyStorage() {
+        storageKeys = append(storageKeys, key)
+    }
+
+    /* Sort the storage keys */
+    sort.Slice(storageKeys, func(i, j int) bool {
+        return common.Hash.Cmp(storageKeys[i], storageKeys[j]) < 0
+    })
+
+    return storageKeys
+}
+
+func hashStorage(state *st.StateDB) uint64 {
+    h := xxhash.New()
+
+    /* Hash the storage keys and values */
+    for _, k := range sortStorageKeys(state) {
+        v := state.GetState(BEACON_ROOTS_ADDRESS, k)
+        h.Write(k.Bytes())
+        h.Write(v.Bytes())
+    }
+
+    return h.Sum64()
+}
+
+func getStorageAddresses(state *st.StateDB) []common.Address {
+    var storageAddresses []common.Address
+
+    for address := range state.GetStateObjects() {
+        storageAddresses = append(storageAddresses, address)
+    }
+
+    return storageAddresses
+}
+
+func storageInvariants(storageAddresses, callers []common.Address) {
+    /* Assert that the EIP-4788 only changes its own storage */
+
+    /* Iterate through all the addresses whose storage is set */
+    for _, address := range storageAddresses {
+        /* The storage of BEACON_ROOTS_ADDRESS is hashed elsewhere and
+         * compared to the hash of the alternative implementation; any
+         * discrepancies will be detected there.
+         */
+        if common.Address.Cmp(address, BEACON_ROOTS_ADDRESS) == 0 {
+            continue
+        }
+
+        isCaller := slices.Contains(callers, address)
+        if isCaller {
+            /* It is expected that runtime.Call() will create a storage object
+             * for caller. However, it must be empty. If it is not empty,
+             * this implies that the EIP-4788 invocation somehow altered
+             * a storage object that is not its own
+             */
+            if len(state.GetStateObjects()[address].GetDirtyStorage()) != 0 {
+                panic("Caller storage should be empty")
+            }
+        } else {
+            /* Any modifications to storage objects that do not belong to
+             * BEACON_ROOTS_ADDRESS or any of the callers implies a bug
+             */
+            panic("Contract altered storage at address other than itself")
+        }
+    }
+}
+
 //export Native_Eip4788_Run
 func Native_Eip4788_Run(data []byte) {
     /* Reset result */
@@ -207,6 +284,9 @@ func Native_Eip4788_Run(data []byte) {
     }
 
     caller := common.BytesToAddress(input.Caller)
+    if slices.Contains(callers, caller) == false {
+        callers = append(callers, caller)
+    }
 
     for key, value := range input.Storage {
         state.SetState(
@@ -232,38 +312,21 @@ func Native_Eip4788_Run(data []byte) {
         },
     )
 
+    storageInvariants(getStorageAddresses(state), callers)
+
     if returndata == nil {
         returndata = []byte{}
     }
 
-    /* Storage must be hashed in order (sorted by key) */
-    var storageKeys []common.Hash
-    /* Extract the storage keys */
-    for key := range state.GetStateObjects()[BEACON_ROOTS_ADDRESS].GetDirtyStorage() {
-        storageKeys = append(storageKeys, key)
-    }
-    /* Sort the storage keys */
-    sort.Slice(storageKeys, func(i, j int) bool {
-        return common.Hash.Cmp(storageKeys[i], storageKeys[j]) < 0
+    result, err = json.Marshal(&ExecutionResult{
+        Ret : ReturnValue {
+            Reverted: err == vm.ErrExecutionReverted,
+            Data: hex.EncodeToString(returndata),
+        },
+        Hash : hashStorage(state),
     })
-
-    h := xxhash.New()
-    /* Hash the storage keys and values */
-    for _, k := range storageKeys {
-        v := state.GetState(BEACON_ROOTS_ADDRESS, k)
-        h.Write(k.Bytes())
-        h.Write(v.Bytes())
-    }
-
-    var res ExecutionResult
-    res.Ret.Reverted = err == vm.ErrExecutionReverted
-    res.Ret.Data = hex.EncodeToString(returndata)
-    res.Hash = h.Sum64()
-
-    result, err = json.Marshal(&res)
     if err != nil {
         panic("Cannot save JSON")
     }
 }
-
 func main() { }

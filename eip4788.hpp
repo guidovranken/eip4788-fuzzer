@@ -24,7 +24,9 @@ class Eip4788 {
                 return ReturnValue::revert();
             }
 
-            const auto root_idx = timestamp_idx + constants::HISTORICAL_ROOTS_MODULUS;
+            const auto root_idx = util::checked_add(
+                    timestamp_idx,
+                    constants::HISTORICAL_ROOTS_MODULUS);
 
             assert(timestamp_idx < root_idx);
 
@@ -37,7 +39,9 @@ class Eip4788 {
             const auto timestamp_idx =
                 uint256(input.timestamp) %
                 constants::HISTORICAL_ROOTS_MODULUS;
-            const auto root_idx = timestamp_idx + constants::HISTORICAL_ROOTS_MODULUS;
+            const auto root_idx = util::checked_add(
+                    timestamp_idx,
+                    constants::HISTORICAL_ROOTS_MODULUS);
 
             assert(timestamp_idx < root_idx);
 

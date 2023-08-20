@@ -94,5 +94,14 @@ namespace util {
         free(s);
         return ret;
     }
+
+    constexpr uint256 checked_add(
+            const uint256& a,
+            const uint256& b) {
+        const intx::uint512 res512 = intx::uint512(a) + intx::uint512(b);
+        const uint256 res256 = a + b;
+        assert(res256 == res512);
+        return res256;
+    }
 }
 
