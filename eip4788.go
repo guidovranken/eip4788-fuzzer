@@ -46,7 +46,7 @@ var eip4788_contract_code = []byte{
     0x42, 0x81, 0x55, 0x5f, 0x35, 0x90, 0x62, 0x01, 0x80, 0x00, 0x01, 0x55,
     0x00}
 
-var BEACON_ROOTS_ADDRESS = common.HexToAddress("0x89e64Be8700cC37EB34f9209c96466DEEDc0d8a6")
+var BEACON_ROOTS_ADDRESS = common.HexToAddress("0xBeAC00541d49391ED88ABF392bfC1F4dEa8c4143")
 
 var state* st.StateDB
 

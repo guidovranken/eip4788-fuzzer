@@ -2,8 +2,19 @@
 class Storage {
     private:
         std::map<uint256, uint256> storage;
+        constexpr void bounds_check(const uint256& address) const {
+            assert(
+                    address <
+                    constants::HISTORICAL_ROOTS_MODULUS * 2);
+        }
     public:
-        uint256 Get(const uint256& address) const {
+        uint256 Get(
+                const uint256& address,
+                const bool check_bounds = false) const {
+            if ( check_bounds ) {
+                bounds_check(address);
+            }
+
             if ( storage.count(address) ) {
                 return storage.at(address);
             } else {
@@ -11,7 +22,13 @@ class Storage {
             }
         }
 
-        void Set(const uint256& address, const uint256& v) {
+        void Set(
+                const uint256& address,
+                const uint256& v,
+                const bool check_bounds = false) {
+            if ( check_bounds ) {
+                bounds_check(address);
+            }
             storage[address] = v;
         }
 

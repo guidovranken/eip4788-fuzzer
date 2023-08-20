@@ -18,7 +18,7 @@ class Eip4788 {
             const auto timestamp_idx =
                 calldata_u256 %
                 constants::HISTORICAL_ROOTS_MODULUS;
-            const auto timestamp = storage.Get(timestamp_idx);
+            const auto timestamp = storage.Get(timestamp_idx, true);
 
             if ( timestamp != calldata_u256 ) {
                 return ReturnValue::revert();
@@ -26,9 +26,9 @@ class Eip4788 {
 
             const auto root_idx = timestamp_idx + constants::HISTORICAL_ROOTS_MODULUS;
 
-            assert(timestamp_idx != root_idx);
+            assert(timestamp_idx < root_idx);
 
-            const auto root = storage.Get(root_idx);
+            const auto root = storage.Get(root_idx, true);
 
             return ReturnValue::value(root);
         }
@@ -39,10 +39,10 @@ class Eip4788 {
                 constants::HISTORICAL_ROOTS_MODULUS;
             const auto root_idx = timestamp_idx + constants::HISTORICAL_ROOTS_MODULUS;
 
-            assert(timestamp_idx != root_idx);
+            assert(timestamp_idx < root_idx);
 
-            storage.Set(timestamp_idx, input.timestamp);
-            storage.Set(root_idx, util::load(input.calldata));
+            storage.Set(timestamp_idx, input.timestamp, true);
+            storage.Set(root_idx, util::load(input.calldata), true);
             return ReturnValue::value(Buffer{});
         }
 };
