@@ -1,6 +1,6 @@
 # eip4788-fuzzer
 
-EIP-4788 fuzzer for Ethereum.
+[EIP-4788](https://github.com/ethereum/EIPs/pull/7456) contract fuzzer for Ethereum Foundation.
 
 TODO sort out licensing of dependencies when making this public.
 
@@ -14,6 +14,7 @@ TODO sort out licensing of dependencies when making this public.
 
 - Block timestamp is 64 bits. Any overflows or other bugs arising from a timestamp `>= 2**64` are not covered.
 - The EIP-4788 contract is only ever called with a block timestamp `>= 1681338455`, which is the Shanghai fork. Shanghai is needed for the `PUSH0` opcode used by the the EIP-4788 contract. Block timestamps lower than that value are not covered.
+- Geth is free of bugs that affect the part of the Geth API used by the harness.
 
 ## Invariants
 

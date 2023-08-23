@@ -22,7 +22,7 @@ type Input struct {
     CallData []byte
     Storage map[string]string
     Timestamp uint64
-    Gas uint64
+    BlockNumber uint64
 }
 
 type ReturnValue struct {
@@ -152,56 +152,7 @@ func Native_Eip4788_Reset() {
 
 var opcode_whitelist []vm.OpCode
 
-type Tracer struct {}
-
-func (l *Tracer) CaptureStart(
-    env *vm.EVM,
-    from common.Address,
-    to common.Address,
-    create bool,
-    input []byte,
-    gas uint64,
-    value *big.Int) {}
-func (l *Tracer) CaptureState(pc uint64,
-    op vm.OpCode,
-    gas,
-    cost uint64,
-    scope *vm.ScopeContext,
-    rData []byte,
-    depth int,
-    err error) {
-    if depth != 1 {
-        panic("Call depth should always be 1")
-    }
-
-    if slices.Contains(opcode_whitelist, op) == false {
-        panic("Executed opcode that is not in EIP-4788")
-    }
-}
-func (l *Tracer) CaptureFault(pc uint64,
-    op vm.OpCode,
-    gas,
-    cost uint64,
-    scope *vm.ScopeContext,
-    depth int,
-    err error) {}
-func (l *Tracer) CaptureEnd(output []byte,
-    gasUsed uint64,
-    err error) {}
-func (l *Tracer) CaptureEnter(
-    typ vm.OpCode,
-    from common.Address,
-    to common.Address,
-    input []byte,
-    gas uint64,
-    value *big.Int) {}
-func (l *Tracer) CaptureExit(output []byte,
-    gasUsed uint64,
-    err error) {}
-func (l *Tracer) CaptureTxStart(gasLimit uint64) {}
-func (l *Tracer) CaptureTxEnd(restGas uint64) {}
-
-func sortStorageKeys(state *st.StateDB) []common.Hash {
+func sortedStorageKeys(state *st.StateDB) []common.Hash {
     var storageKeys []common.Hash
 
     /* Retrieve the storage keys */
@@ -221,7 +172,7 @@ func hashStorage(state *st.StateDB) uint64 {
     h := xxhash.New()
 
     /* Hash the storage keys and values */
-    for _, k := range sortStorageKeys(state) {
+    for _, k := range sortedStorageKeys(state) {
         v := state.GetState(BEACON_ROOTS_ADDRESS, k)
         h.Write(k.Bytes())
         h.Write(v.Bytes())
@@ -258,14 +209,14 @@ func storageInvariants(storageAddresses, callers []common.Address) {
             /* It is expected that runtime.Call() will create a storage object
              * for caller. However, it must be empty. If it is not empty,
              * this implies that the EIP-4788 invocation somehow altered
-             * a storage object that is not its own
+             * a storage object that is not its own.
              */
             if len(state.GetStateObjects()[address].GetDirtyStorage()) != 0 {
                 panic("Caller storage should be empty")
             }
         } else {
             /* Any modifications to storage objects that do not belong to
-             * BEACON_ROOTS_ADDRESS or any of the callers implies a bug
+             * BEACON_ROOTS_ADDRESS or any of the callers implies a bug.
              */
             panic("Contract altered storage at address other than itself")
         }
@@ -304,7 +255,7 @@ func Native_Eip4788_Run(data []byte) {
             ChainConfig: params.MainnetChainConfig,
             //GasLimit: input.Gas,
             GasLimit: 0,
-            BlockNumber: new(big.Int).SetUint64(12965000),
+            BlockNumber: new(big.Int).SetUint64(input.BlockNumber),
             Time: input.Timestamp,
             EVMConfig: vm.Config{
                 Tracer: &Tracer{},

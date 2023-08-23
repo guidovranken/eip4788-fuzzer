@@ -57,7 +57,7 @@ class Input {
         uint256 caller;
         Buffer calldata;
         uint64_t timestamp;
-        uint64_t gas;
+        uint64_t blocknumber;
 
         /* Deserialize variables from the fuzzer input */
         static std::optional<Input> Extract(
@@ -102,7 +102,10 @@ class Input {
                 ret.timestamp = constants::FORK_TIMESTAMP;
             }
 
-            EXTRACT2(gas, uint64_t);
+            EXTRACT2(blocknumber, uint64_t);
+            if ( ret.blocknumber < constants::LondonBlock ) {
+                ret.blocknumber = constants::LondonBlock;
+            }
 
             return ret;
 #undef EXTRACT
@@ -122,7 +125,7 @@ class Input {
             ret["storage"] = storage_;
 
             ret["timestamp"] = timestamp;
-            ret["gas"] = gas;
+            ret["blocknumber"] = blocknumber;
 
             return ret;
         }
