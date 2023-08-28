@@ -72,7 +72,7 @@ namespace util {
         return {bytes, bytes + 32};
     }
 
-    static void hash(XXH64_state_t*h, const Buffer& data) {
+    static void hash(XXH64_state_t* h, const Buffer& data) {
         assert(XXH64_update(h, data.data(), data.size()) != XXH_ERROR);
     }
 

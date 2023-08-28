@@ -50,6 +50,18 @@ class Storage {
         const std::map<uint256, uint256>& MapRef(void) const {
             return storage;
         }
+
+        static Storage FromJson(const nlohmann::json& j) {
+            Storage ret;
+
+            for (const auto& kv : j.items()) {
+                ret.Set(
+                    intx::from_string<uint256>(kv.key()),
+                    intx::from_string<uint256>(kv.value()));
+            }
+
+            return ret;
+        }
 };
 
 class Input {

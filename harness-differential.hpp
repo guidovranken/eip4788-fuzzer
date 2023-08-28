@@ -31,6 +31,43 @@ namespace harness {
                 }
 
                 assert(cpp == native);
+
+#if defined(FUZZER_WITH_PYTHON)
+                /* Run the Python implementation */
+                ExecutionResult py;
+                {
+                    const auto jsonStr = input->Json(storage).dump();
+                    PyObject *pArgs, *pValue;
+
+                    pArgs = PyTuple_New(1);
+                    pValue = PyBytes_FromStringAndSize(jsonStr.c_str(), jsonStr.size());
+                    PyTuple_SetItem(pArgs, 0, pValue);
+
+                    pValue = PyObject_CallObject(
+                            static_cast<PyObject*>(python_FuzzerRunOne),
+                            pArgs);
+
+                    assert(pValue != nullptr);
+
+                    assert(PyBytes_Check(pValue));
+                    {
+                        /* Retrieve output */
+
+                        uint8_t* output;
+                        Py_ssize_t outputSize;
+                        assert(PyBytes_AsStringAndSize(pValue, (char**)&output, &outputSize) != -1);
+                        auto j = nlohmann::json::parse(
+                                std::string(output, output + outputSize));
+                        const auto storage = Storage::FromJson(j["Storage"]);
+                        j["Hash"] = storage.Hash();
+                        py = ExecutionResult::FromJson(j);
+                    }
+
+                    Py_DECREF(pValue);
+                    Py_DECREF(pArgs);
+                }
+                assert(py == native);
+#endif
             }
         }
     }

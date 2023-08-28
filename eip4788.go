@@ -46,7 +46,7 @@ var eip4788_contract_code = []byte{
     0x42, 0x81, 0x55, 0x5f, 0x35, 0x90, 0x62, 0x01, 0x80, 0x00, 0x01, 0x55,
     0x00}
 
-var BEACON_ROOTS_ADDRESS = common.HexToAddress("0xBeAC00541d49391ED88ABF392bfC1F4dEa8c4143")
+var BEACON_ROOTS_ADDRESS = common.HexToAddress("0xbEac00dDB15f3B6d645C48263dC93862413A222D")
 
 var state* st.StateDB
 
@@ -253,7 +253,6 @@ func Native_Eip4788_Run(data []byte) {
             Origin: caller,
             State: state,
             ChainConfig: params.MainnetChainConfig,
-            //GasLimit: input.Gas,
             GasLimit: 0,
             BlockNumber: new(big.Int).SetUint64(input.BlockNumber),
             Time: input.Timestamp,
