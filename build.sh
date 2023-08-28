@@ -31,3 +31,5 @@ cd cpython/
 make -j$(nproc)
 make install
 cd ../
+
+make
