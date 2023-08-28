@@ -1,0 +1,33 @@
+diff --git a/core/state/state_object.go b/core/state/state_object.go
+index cd72f3f..d3468f1 100644
+--- a/core/state/state_object.go
++++ b/core/state/state_object.go
+@@ -231,7 +231,7 @@ func (s *stateObject) SetState(key, value common.Hash) {
+ 	// If the new value is the same as old, don't set
+ 	prev := s.GetState(key)
+ 	if prev == value {
+-		return
++		//return
+ 	}
+ 	// New value is different, update and journal the change
+ 	s.db.journal.append(storageChange{
+@@ -536,3 +536,7 @@ func (s *stateObject) Balance() *big.Int {
+ func (s *stateObject) Nonce() uint64 {
+ 	return s.data.Nonce
+ }
++
++func (s *stateObject) GetDirtyStorage() Storage {
++	return s.dirtyStorage
++}
+diff --git a/core/state/statedb.go b/core/state/statedb.go
+index 5c33e2d..befd2eb 100644
+--- a/core/state/statedb.go
++++ b/core/state/statedb.go
+@@ -1404,3 +1404,7 @@ func copy2DSet[k comparable](set map[k]map[common.Hash][]byte) map[k]map[common.
+ 	}
+ 	return copied
+ }
++
++func (s *StateDB) GetStateObjects() map[common.Address]*stateObject {
++    return s.stateObjects
++}

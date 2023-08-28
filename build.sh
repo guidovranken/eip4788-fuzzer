@@ -18,7 +18,7 @@ git clone https://github.com/ethereum/go-ethereum
 cd go-ethereum/
 git checkout 386cba15b5ee56908e3b33f7ee52a4c8486d5d8f
 
-git clone --depth 1 https://github.com/guidovranken/eip4788-fuzzer
+git clone --depth 1 git@github.com:guidovranken/eip4788-fuzzer.git
 # Patch Geth
 git apply eip4788-fuzzer/geth.patch
 cd eip4788-fuzzer/
